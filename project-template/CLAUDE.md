@@ -43,7 +43,9 @@
 - **S3.** The ONLY human gate at spec time is `## Decisions requiring human input` — each a
   structured choice (2–4 options + Recommended + tradeoff) in three categories: **AC scope /
   space-time tradeoffs / core architecture**. A tradeoff surfacing mid-implementation
-  interrupts and asks then (gate G2).
+  interrupts and asks then (gate G2). G1 is presented as a **G1 brief** — a plain-text flow
+  chart in chat, decisions marked at the step they occur (`docs/orchestration.md` §7); the
+  human's `①… ②…` reply is the approval.
 - **S4.** A too-big feature is SPLIT, not built in one pass: propose an epic + vertical
   slices (spine first); the human confirms the split as part of G1.
 - **S5.** **The scope walk runs at the FRONT and locks the AC once.** Before G1, a

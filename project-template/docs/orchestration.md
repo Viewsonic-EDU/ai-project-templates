@@ -272,9 +272,74 @@ Several workers run concurrently and the agent list is the only place the human 
   first act a `log()` of its identity — `<TICKET> · round N · <worktree>`. That narrator line
   is the ONLY place concurrent instances are distinguishable.
 
+## 7. The G1 brief — the human does not read the spec
+
+Specs are machine-facing: Codex, reviewers and the S5 auditor read them. They are too long
+for the human, so G1 tends to get decided on an ad-hoc chat summary. The brief is the
+human-facing G1 artifact, posted in chat. The spec is not changed for it.
+
+- Draw the ticket's behaviour top-to-bottom, from first step to last, as a plain-text flow
+  chart using box-drawing characters `│ ▼ ├─ └─ ──►`. One box = one short sentence, in plain
+  words, with no rule anchors or jargon.
+- Indent branches under the step they leave and name only the OUTCOME
+  (`├─ accepts the recommendation ──► build`).
+- Put a dashed marker AT each step needing a human decision:
+  `┄┄ ① <question>  Recommended: <answer>`. Never collect decisions in a separate table;
+  the sequence gives the human context.
+- Number decisions ①②③…; the human replies `① ok ② yes` (in whatever language they use)
+  and that reply IS the G1 approval. Record it in `docs/decision-log.md` as today; the
+  brief itself is not filed.
+- End with ONE line `NOT doing: …` listing drops/defers.
+- Keep the chart width ≤ 60 columns so nothing wraps in a terminal. No Mermaid, no Artifact
+  / web page, no tables.
+- A ticket with no branch and nothing to decide gets one line — "just build it" — instead
+  of a chart.
+- The S5 cross-family auditor also checks brief ↔ spec consistency: same behaviour, same
+  drops, and every dashed marker has a matching row in the spec's Decisions table. Fix any
+  mismatch before dispatch.
+
+A brief for this very rule, as an example of the shape:
+
+```
+ Human files a ticket
+   │
+   ▼
+ Orchestrator writes the spec   (machine-facing)
+   │
+   ▼
+ Orchestrator posts a brief like this one
+   │
+   ├─ no branch, nothing to decide ──► "just build it"
+   │                    ┄┄ ① OK like this?  Recommended: yes
+   ▼
+ A step needs the human's call ──► stop and ask there
+   │
+   ▼
+ Human replies
+   ├─ accepts the recommendation ──► build
+   ├─ picks another option ──► spec updated ──► build
+   └─ something was missed ──► add it, ask again
+   │
+   ▼
+ Other-family auditor: brief == spec?
+   │              ┄┄ ② keep this step?  Recommended: yes
+   ├─ mismatch ──► fix first, no dispatch
+   ▼
+ Decisions go into decision-log (as today)
+
+ NOT doing: diagram tools, web page, template section, tests
+```
+
+The format is expected to converge with use; when the human says a part did not help the
+decision, remove it from the rules here (H2) rather than adding to it.
+
 ---
 
 Change-log:
+- ported from a mature downstream project (2026-09-17): §7 **the G1 brief** — G1 is
+  presented as a ≤60-column plain-text flow chart in chat with decisions marked at the step
+  they occur; the spec stays machine-facing; the S5 auditor cross-checks brief ↔ spec.
+  CLAUDE.md S3 gained one sentence.
 - 2026-09-14 (human ruling): **removed §7 The CI gate (T9)** — these projects have no CI, so
   the terminal state is a push to the main branch after G4 with the suite green (T8). See
   CLAUDE.md close ritual + testing-strategy.md change-log.

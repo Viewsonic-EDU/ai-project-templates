@@ -26,6 +26,10 @@ writer of Y", …). A worker that must break one STOPS and escalates (D1).
 ---
 
 Change-log:
+- ported from a mature downstream project (2026-09-17): `docs/orchestration.md` §7 "The G1
+  brief" — G1 is a plain-text flow chart in chat, decisions marked at their step; the spec
+  stays machine-facing; the S5 auditor cross-checks brief ↔ spec. Docs-only; CLAUDE.md S3
+  gains one sentence; file map unchanged.
 - 2026-09-16 (TICKET-1): fixed `scripts/tickets.sh` `cell()` — it padded/truncated by UTF-8
   code-point count, so CJK/full-width titles overflowed the column and wrapped, and the `watch`
   TUI's cursor-addressed redraw left scroll residue. Now pure-awk UTF-8 decode + terminal-width
