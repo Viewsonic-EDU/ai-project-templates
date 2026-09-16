@@ -65,6 +65,7 @@ EPIC_HELP = """  tickets.sh new-epic SAMPLE-N "title"  create an epic (status de
   tickets.sh set-epic CHILD PARENT       attach/re-parent a task to an epic
   tickets.sh epic SAMPLE-N               list children and done/total progress
   tickets.sh get-worktree SAMPLE-N       resolve the stored key using WT_ROOT
+  tickets.sh set-size SAMPLE-N [N]       size in positive 0.25 steps; omit to clear
 """
 
 
@@ -140,8 +141,8 @@ def board(tmp_path: Path) -> TicketRepo:
 
 def creation_bytes(key: str, title: str) -> bytes:
     return (
-        f"---\nkey: {key}\ntitle: {title}\nstatus: todo\nspec:\nworktree:\n"
-        f"blocked_by: []\nupdated: {TODAY}\n---\n"
+        f"---\nkey: {key}\ntitle: {title}\nstatus: todo\nspec:\nworktree:\nblocked_by: []\nsize:\n"
+        f"updated: {TODAY}\n---\n"
     ).encode()
 
 
@@ -2422,4 +2423,151 @@ def test_ac10_field_absent_board_list_goldens(board: TicketRepo) -> None:
             ("SAMPLE-5", "done", ""),
         )
     )
+    assert board.snapshot() == before
+
+
+@pytest.mark.parametrize("command", ["new", "new-epic"])
+def test_creation_size_empty(board: TicketRepo, command: str) -> None:
+    """AC18: empty size follows SAMPLE-55's blocked_by field and precedes updated."""
+    board.run(command, "SAMPLE-900", "sized")
+    assert "worktree:\nblocked_by: []\nsize:\nupdated:" in board.path("SAMPLE-900").read_text()
+
+
+def test_legacy_size_absent_reads_empty(board: TicketRepo) -> None:
+    """AC18: body-only distractor is not a field; all read commands preserve bytes."""
+    board.path("SAMPLE-900").parent.mkdir()
+    original = (
+        b"---\nkey: SAMPLE-900\ntitle: legacy\nstatus: todo\nworktree:\n"
+        b"updated: 2001-02-03\n---\nsize: 9\n"
+    )
+    board.path("SAMPLE-900").write_bytes(original)
+    assert board.run("list").stdout == "SAMPLE-900   todo          legacy\n"
+    assert board.run("board").stdout == board_golden([], ["SAMPLE-900  legacy"], [], [])
+    assert board.run("show", "SAMPLE-900").stdout.encode() == original
+    assert board.run("get-worktree", "SAMPLE-900").stdout == ""
+    assert board.path("SAMPLE-900").read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "value,stored",
+    [
+        ("0.25", "0.25"),
+        ("0.5", "0.5"),
+        ("0.75", "0.75"),
+        ("1", "1"),
+        ("1.0", "1"),
+        ("1.25", "1.25"),
+        ("2", "2"),
+    ],
+)
+def test_set_size_accepts_quarter_steps(board: TicketRepo, value: str, stored: str) -> None:
+    """AC19: normalized storage, timestamp and show all reflect the requested size."""
+    board.run("new", "SAMPLE-900", "slice")
+    board.age("SAMPLE-900")
+    assert board.run("set-size", "SAMPLE-900", value).stdout == f"SAMPLE-900 -> size {stored}\n"
+    assert board.field("SAMPLE-900", "size") == stored
+    assert board.field("SAMPLE-900", "updated") == TODAY
+    assert f"size: {stored}\n" in board.run("show", "SAMPLE-900").stdout
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "0.3", "1/2", "abc", ""])
+def test_set_size_refuses_without_write(board: TicketRepo, value: str) -> None:
+    board.run("new", "SAMPLE-900", "slice")
+    board.age("SAMPLE-900")
+    before = board.snapshot()
+    result = board.run("set-size", "SAMPLE-900", value, code=1)
+    assert result.stderr == "tickets.sh: size must be > 0 in 0.25 steps\n"
+    assert board.snapshot() == before
+
+
+def test_set_size_refused_on_epic(board: TicketRepo) -> None:
+    board.run("new-epic", "SAMPLE-900", "epic")
+    before = board.snapshot()
+    assert "per slice" in board.run("set-size", "SAMPLE-900", "1", code=1).stderr
+    assert board.snapshot() == before
+
+
+def test_set_size_missing_ticket(board: TicketRepo) -> None:
+    assert "no such ticket" in board.run("set-size", "SAMPLE-900", "1", code=1).stderr
+    assert not (board.root / "tickets").exists()
+
+
+def test_set_size_clears(board: TicketRepo) -> None:
+    board.run("new", "SAMPLE-900", "slice")
+    board.run("set-size", "SAMPLE-900", "1")
+    assert board.run("set-size", "SAMPLE-900").stdout == "SAMPLE-900 -> size\n"
+    assert board.field("SAMPLE-900", "size") == ""
+    assert "[1]" not in board.run("list").stdout
+
+
+def test_set_size_legacy_insertion_before_updated(board: TicketRepo) -> None:
+    board.run("new", "SAMPLE-900", "slice")
+    path = board.path("SAMPLE-900")
+    path.write_text(path.read_text().replace("size:\n", "") + "\nsize: body distractor\n")
+    board.run("set-size", "SAMPLE-900", "0.5")
+    assert f"blocked_by: []\nsize: 0.5\nupdated: {TODAY}" in path.read_text()
+    assert path.read_text().endswith("\nsize: body distractor\n")
+
+
+def test_sized_list_and_board_golden(board: TicketRepo) -> None:
+    """AC20: suffix contributes to cell width and precedes the epic suffix."""
+    board.env["TICKETS_COLS"] = "120"
+    board.run("new", "SAMPLE-900", "small")
+    board.run("set-size", "SAMPLE-900", "0.5")
+    assert board.run("list").stdout == "SAMPLE-900   todo          small [0.5]\n"
+    assert board.run("board").stdout == board_golden([], ["SAMPLE-900  small [0.5]"], [], [])
+    board.run("new", "SAMPLE-901", "x" * 100)
+    board.run("set-size", "SAMPLE-901", "1")
+    assert board.run("board").stdout == board_golden(
+        [], ["SAMPLE-900  small [0.5]", "SAMPLE-901  " + "x" * 100 + " [1]"], [], []
+    )
+    # Defensive rendering of an inherited epic field never reverses suffix order.
+    path = board.path("SAMPLE-900")
+    path.write_text(path.read_text().replace("status: todo", "type: epic\nstatus: todo"))
+    assert "small [0.5] [epic 0/0]" in board.run("list").stdout
+
+
+def test_size_dependencies_and_epic_setters_preserve_other_fields(board: TicketRepo) -> None:
+    """Rebase integration: each setter changes only its field and updated timestamp."""
+    board.run("new", "SAMPLE-1", "slice")
+    board.run("new", "SAMPLE-2", "blocker")
+    board.run("new-epic", "SAMPLE-9", "parent")
+    path = board.path("SAMPLE-1")
+    path.write_bytes(path.read_bytes() + b"\n## Body\nsize: 9\nblocked_by: [SAMPLE-99]\n")
+    expected = path.read_bytes()
+    board.run("set-size", "SAMPLE-1", "0.5")
+    expected = expected.replace(b"\nsize:\n", b"\nsize: 0.5\n", 1)
+    assert path.read_bytes() == expected
+    board.run("block", "SAMPLE-1", "SAMPLE-2")
+    expected = expected.replace(b"blocked_by: []", b"blocked_by: [SAMPLE-2]", 1)
+    assert path.read_bytes() == expected
+    board.run("set-epic", "SAMPLE-1", "SAMPLE-9")
+    expected = expected.replace(b"\n---\n", b"\nepic: SAMPLE-9\n---\n", 1)
+    assert path.read_bytes() == expected
+    board.run("set-size", "SAMPLE-1", "0.75")
+    expected = expected.replace(b"\nsize: 0.5\n", b"\nsize: 0.75\n", 1)
+    assert path.read_bytes() == expected
+    board.run("unblock", "SAMPLE-1", "SAMPLE-2")
+    expected = expected.replace(b"blocked_by: [SAMPLE-2]", b"blocked_by: []", 1)
+    assert path.read_bytes() == expected
+    assert board.run("show", "SAMPLE-1").stdout.encode() == expected
+
+
+@pytest.mark.parametrize("color", ["never", "always"])
+@pytest.mark.parametrize("status", ["wishlist", "todo", "in-progress"])
+def test_blocked_size_render_order_and_width(board: TicketRepo, color: str, status: str) -> None:
+    """Keep the landed marker position, with size after it and within board width."""
+    put_ticket(board, "SAMPLE-1", title="slice", status=status)
+    put_ticket(board, "SAMPLE-2", title="blocker")
+    board.run("set-size", "SAMPLE-1", "0.5")
+    board.run("block", "SAMPLE-1", "SAMPLE-2")
+    board.env.update(TICKETS_COLOR=color, TICKETS_COLS="120")
+    before = board.snapshot()
+    assert board.run("list").stdout == (
+        f"{'SAMPLE-1':<12} {status:<13} slice [blocked: SAMPLE-2] [0.5]\n"
+        + ready_line("SAMPLE-2", "blocker")
+    )
+    columns: list[list[str]] = [[], ["SAMPLE-2  blocker"], [], []]
+    columns[("wishlist", "todo", "in-progress").index(status)].append("! SAMPLE-1  slice [0.5]")
+    assert ANSI.sub("", board.run("board").stdout) == board_golden(*columns)
     assert board.snapshot() == before

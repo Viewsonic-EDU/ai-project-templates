@@ -26,6 +26,28 @@ writer of Y", …). A worker that must break one STOPS and escalates (D1).
 ---
 
 Change-log:
+- ported from a mature downstream project (2026-09-17): **G0 context-budget slice sizing.**
+  New gate G0 (CLAUDE.md gate table, S4): before `worktree.sh new` the orchestrator sizes the
+  ticket (`docs/slice-sizing.md` — weighted feature table × calibration factor, 0.25 steps,
+  raw > 1.0 → split proposal, < 0.25 → merge) and reports its own measured context use
+  (`scripts/context-ledger.sh now`); the human picks same session vs a fresh one.
+  `worktree.sh new`/`rm` call `context-ledger.sh start`/`record` best-effort; `record`
+  appends to `docs/context-ledger.md`, which the next `land` commits with the board;
+  `calibrate` gives the median actual/predicted of the last five rows. `tickets.sh` gains
+  `set-size` and a `size:` frontmatter field shown as `[N]` on board/list. Spec template
+  gains `## Size estimate & slice split`. ≥3-slice splits get one read-only cross-family
+  batch check (`scripts/batch-split-check-template.md`, rubric R1–R4, VETO on circular
+  `blocked_by` / vacuous AC, human-adjudicated). The ledger finds the orchestrator's session
+  through `.claude/hooks/session-events.sh` (new, registered for SessionStart +
+  UserPromptSubmit) — the downstream project relied on a machine-global hook; the template
+  ships its own so it stays self-contained (R2). Genericized: `TICKET_PREFIX` in the ledger
+  script, the four extra-cost feature rows renamed (weights kept), the gates/commands
+  vocabulary rebuilt from this template's scripts, the downstream backlog section dropped,
+  the ledger table empty. Tests: `tests/test_context_ledger.py` (fixture process API + real
+  ancestor walk, doc arithmetic/link contracts) with `tests/fixtures/context_ledger` (scrubbed
+  transcript records) and `tests/fixtures/slice_split`; tickets/worktree/width suites
+  extended. Suites green here (tickets 336, worktree 35, ledger 106, width regression);
+  `context-ledger.sh now` verified live from a real Claude session.
 - ported from a mature downstream project (2026-09-17): **ticket dependencies + minor-clean
   before G4.** `scripts/tickets.sh` gains `block`/`unblock`/`ready`, a close gate (a ticket
   with unresolved blockers needs `close --force`), exhaustive cycle checks, fail-closed

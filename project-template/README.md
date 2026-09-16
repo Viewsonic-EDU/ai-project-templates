@@ -12,7 +12,8 @@ discipline is in force from commit one. Four pillars:
    extra cross-family review finder, dispatched ONLY over the `mcp__codex__codex` MCP tool
    (shell `codex exec` is deprecated), with a dev-model fallback ladder
    (`docs/orchestration.md` §5.2/§5.2.1, `AGENTS.md`).
-4. **Human gates** — exactly four, listed at the bottom of `CLAUDE.md`: G1 spec/AC
+4. **Human gates** — exactly five, listed at the bottom of `CLAUDE.md`: G0 context budget
+   (same session or a fresh one, from the slice size + measured context) · G1 spec/AC
    approval · G2 mid-flight tradeoffs · G3 review-loop escalations · G4 final sign-off
    before push. Everything else is automated — including the machine gate that closes a
    ticket: the compile+suite convergence of a worker hand-back (T8). The push to the main
@@ -44,8 +45,17 @@ discipline is in force from commit one. Four pillars:
      (`gpt-6-astra` → `gpt-5.6-sol` → `claude-fable-5-1`; `docs/orchestration.md` §5.2.1) —
      already set; pass `model:` explicitly on each `mcp__codex__codex` dispatch, and adjust
      the ladder rungs only if a project differs.
-   - `scripts/tickets.sh` + `scripts/worktree.sh`: `TICKET_PREFIX` — your ticket-key prefix
-     (e.g. `AB`, `PROJ`); `worktree.sh` also reads `MAIN_BRANCH`.
+   - `scripts/tickets.sh` + `scripts/worktree.sh` + `scripts/context-ledger.sh`:
+     `TICKET_PREFIX` — your ticket-key prefix (e.g. `AB`, `PROJ`); `worktree.sh` also reads
+     `MAIN_BRANCH`. Export `TICKET_PREFIX` in your shell (or edit the three defaults) so all
+     three agree.
+   - `docs/slice-sizing.md`: rename the four extra-cost rows of the feature table to what
+     is expensive for your stack; keep the weights until your ledger has five rows.
+   - The context ledger (G0) needs `python3` on `PATH` and the session hook
+     `.claude/hooks/session-events.sh` (already registered in `.claude/settings.json`); it
+     writes `~/.claude-control/events/<pid>.json`. A machine-global hook writing the same
+     file is harmless. Without the hook every ledger command reports `unmeasured` and
+     `worktree.sh` still works.
    - `AGENTS.md` + `scripts/codex-dispatch-template.md`: `<LINT_CMD>` — the lint/typecheck
      that DOES run inside the Codex sandbox (the one build-ish gate the worker owns, T8).
 4. Write the real **Build / run** section of `CLAUDE.md` for your stack.
@@ -74,14 +84,23 @@ docs/orchestration.md        orchestrator pattern, the Codex lane, hand-back con
 docs/testing-strategy.md     test layers, workflows A/B/C, review-loop mechanics, sign-off
 docs/architecture.md         file map + invariants + change-log (kept current, H2)
 docs/test-impact-map.md      area → suites to re-run on change
-docs/decision-log.md         dated human decisions (G1–G3 outcomes)
-scripts/worktree.sh          one worktree per ticket (new / land / rm / list)
-scripts/tickets.sh           git-backed ticket board (tickets/*.md, shared across worktrees)
+docs/decision-log.md         dated human decisions (G0–G3 outcomes)
+docs/slice-sizing.md         G0: slice size points, calibration loop, batch-split rubric,
+                             established gates & commands
+docs/context-ledger.md       measured context per ticket (appended by context-ledger.sh)
+scripts/worktree.sh          one worktree per ticket (new / land / rm / list); new/rm hook the ledger
+scripts/tickets.sh           git-backed ticket board (tickets/*.md, shared across worktrees;
+                             epics, blocked_by dependencies, size)
+scripts/context-ledger.sh    now / start / record / calibrate — the orchestrator's own
+                             context use per ticket
 scripts/codex-dispatch-template.md   the dispatch prompt contract
-tests/test_tickets.py, tests/test_worktree.py, tests/tickets_width_test.*
-                             the scripts' own regression suites (pytest / standalone);
+scripts/batch-split-check-template.md   read-only cross-family split check (≥3 slices)
+tests/test_tickets.py, tests/test_worktree.py, tests/test_context_ledger.py,
+tests/tickets_width_test.*   the scripts' own regression suites (pytest / standalone);
                              keep them green when editing scripts/ (T3)
+tests/fixtures/              scrubbed transcript records + slice-split VETO/clean corpus
 .claude/rules/               path-scoped auto-loading detail rules (see its README)
-.claude/settings.json        pre-commit housekeeping reminder hook
+.claude/settings.json        pre-commit housekeeping reminder + session-events hooks
+.claude/hooks/session-events.sh   records session id/transcript per claude PID (ledger input)
 .codex/config.toml           project-level Codex config (MCP servers etc.)
 ```

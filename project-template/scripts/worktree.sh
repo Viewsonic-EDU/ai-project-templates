@@ -14,6 +14,7 @@ WT_ROOT="${WT_ROOT:-$(dirname "$MAIN_ROOT")/$(basename "$MAIN_ROOT")-worktrees}"
 export WT_ROOT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TICKETS_SH="$SCRIPT_DIR/tickets.sh"
+LEDGER_SH="$SCRIPT_DIR/context-ledger.sh"
 
 cmd="${1:-}"; ticket="${2:-}"
 
@@ -21,7 +22,7 @@ case "$cmd" in
   new)
     [ -n "$ticket" ] || { echo "usage: worktree.sh new <TICKET>" >&2; exit 1; }
     mkdir -p "$WT_ROOT"
-    git -C "$REPO_ROOT" worktree add -b "$ticket" "$WT_ROOT/$ticket" "$MAIN_BRANCH"
+    git -C "$REPO_ROOT" worktree add -b "$ticket" "$WT_ROOT/$ticket" "$MAIN_BRANCH" >&2
     # Ticket board (optional): mark an existing ticket in-progress. Do NOT auto-create with a
     # junk title — tickets.sh requires a descriptive title (T2); create the ticket first.
     if [ -x "$TICKETS_SH" ]; then
@@ -33,6 +34,8 @@ case "$cmd" in
         echo "note: no board ticket $ticket yet — create it with: scripts/tickets.sh new $ticket \"<title>\"" >&2
       fi
     fi
+    # Context ledger (G0, docs/slice-sizing.md): best-effort start marker; never fails `new`.
+    [ -x "$LEDGER_SH" ] && "$LEDGER_SH" start "$ticket" >&2 || true
     echo "$WT_ROOT/$ticket"
     ;;
   land)
@@ -52,8 +55,8 @@ case "$cmd" in
       echo "main working tree must be on $MAIN_BRANCH before landing $ticket" >&2; exit 1
     fi
     # A plain commit includes the existing index: refuse unrelated staged work before pushing.
-    if ! git -C "$MAIN_ROOT" diff --cached --quiet -- . ':!tickets/*.md'; then
-      echo "unstage non-tickets/*.md paths on the main working tree before landing $ticket" >&2; exit 1
+    if ! git -C "$MAIN_ROOT" diff --cached --quiet -- . ':!tickets/*.md' ':!docs/context-ledger.md'; then
+      echo "unstage non-tickets/*.md / non-docs/context-ledger.md paths on the main working tree before landing $ticket" >&2; exit 1
     fi
     git -C "$MAIN_ROOT" fetch origin >&2
     branch_ahead="$(git -C "$MAIN_ROOT" rev-list --count "origin/$MAIN_BRANCH..$ticket")"
@@ -69,6 +72,9 @@ case "$cmd" in
       fi
     fi
     git -C "$MAIN_ROOT" add -- 'tickets/*.md'
+    if [ -f "$MAIN_ROOT/docs/context-ledger.md" ]; then
+      git -C "$MAIN_ROOT" add -- docs/context-ledger.md
+    fi
     if git -C "$MAIN_ROOT" diff --cached --quiet; then
       if [ "$branch_ahead" -eq 0 ] && [ "$main_ahead" -eq 0 ]; then
         echo "$ticket has no commits ahead of origin/$MAIN_BRANCH and no pending board changes; nothing to land" >&2
@@ -95,6 +101,8 @@ case "$cmd" in
     ;;
   rm)
     [ -n "$ticket" ] || { echo "usage: worktree.sh rm <TICKET>" >&2; exit 1; }
+    # Context ledger: record the measured interval before the worktree goes; never fails `rm`.
+    [ -x "$LEDGER_SH" ] && "$LEDGER_SH" record "$ticket" >&2 || true
     git -C "$REPO_ROOT" worktree remove "$WT_ROOT/$ticket"
     git -C "$REPO_ROOT" branch -d "$ticket" || echo "branch $ticket not fully merged — delete manually with -D if intended" >&2
     # Removal is not "done" (done = pushed to main after G4 with the suite green). Leave status; just remind.

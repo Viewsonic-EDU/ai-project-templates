@@ -19,6 +19,23 @@ Numbered, testable statements. Each maps to at least one test in the Test plan.
 1. …
 2. …
 
+## Size estimate & slice split
+
+Use `docs/slice-sizing.md`: enumerate numbered AC items (including walk BUILD), every
+new/edited file (tests/fixtures/docs too), resources and extra costs. Show the table ×
+weights × current calibration factor derivation, raw result and resulting `size:`.
+
+| Feature | Count | Weight | Contribution |
+|---|---|---|---|
+| … | | | |
+
+Factor: … (initial 0.6; for n > 0 from `scripts/context-ledger.sh calibrate`,
+`next factor = current factor × median(actual/predicted)`). Raw: …; `size:` …
+(nearest 0.25, minimum 0.25). Raw > 1.0: split proposal for G1. Raw < 0.25: merge note.
+For each slice: `blocked_by: […]`; Parallel-safety: safe beside …; conflicts with …
+on files …; serialized resources … (or none). For ≥3 slices, attach the cross-family
+batch-split check result verbatim at G1; human-only adjudication.
+
 ## Design / architecture
 
 The chosen approach; alternatives considered and why they lost. New files/modules and

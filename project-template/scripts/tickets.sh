@@ -319,6 +319,11 @@ epic_suffix() { # file key
   fi
 }
 
+size_suffix() { # file
+  local size; size="$(field "$1" size)"
+  if [ -n "$size" ]; then printf ' [%s]' "$size"; fi
+}
+
 # --- commands ----------------------------------------------------------------------
 cmd_create() {
   local command=$1; shift
@@ -351,6 +356,7 @@ status: $status
 spec:
 worktree:
 blocked_by: []
+size:
 updated: $TODAY
 ---
 EOF
@@ -406,6 +412,29 @@ cmd_set_epic() {
     recompute_epic "$old_parent"
   fi
   recompute_epic "$parent"
+}
+
+cmd_set_size() {
+  local key=${1:-} size=${2:-} f tmp
+  require_ticket "$key"
+  is_epic "$key" && die "size is per slice; cannot size an epic"
+  if [ "$#" -ge 2 ]; then
+    [[ "$size" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "size must be > 0 in 0.25 steps"
+    size=$(awk -v n="$size" 'BEGIN {
+      if (n<=0 || n*4!=int(n*4)) exit 1
+      printf "%g", n
+    }') || die "size must be > 0 in 0.25 steps"
+  fi
+  f="$(file_for "$key")"; tmp="$(mktemp)"
+  # Insert legacy size before updated; keep all other fields/body in place.
+  awk -v v="$size" '
+    /^---[ \t]*$/ { n++; if (n==2 && !done) { print "size: "v; done=1 }; print; next }
+    n==1 && /^size:/ { if (!done) print "size: "v; done=1; next }
+    n==1 && /^updated:/ && !done { print "size: "v; done=1 }
+    { print }
+  ' "$f" > "$tmp" && mv "$tmp" "$f"
+  set_field "$f" updated "$TODAY"
+  echo "$key -> size${size:+ $size}"
 }
 
 cmd_epic() {
@@ -578,7 +607,7 @@ board_row() { # file; updates the caller's line and per-column group_epic in ord
   local f=$1 key status title kind parent style= child=no blocked=no unresolved
   key=$(field "$f" key); status=$(field "$f" status); title=$(field "$f" title)
   kind=$(field "$f" type); parent=$(field "$f" epic)
-  line="$key  $title$(epic_suffix "$f" "$key")"
+  line="$key  $title$(size_suffix "$f")$(epic_suffix "$f" "$key")"
   if [ "$kind" = epic ]; then
     group_epic=$key
   elif [ -n "$parent" ] && [ "$parent" = "$group_epic" ]; then
@@ -612,7 +641,12 @@ cmd_list() {
       if [ -n "$unresolved" ]; then suffix=" [blocked: $(blocker_description "$unresolved" names)]"; fi
     fi
     key_order "$key"
-    printf '%-12s %-13s %s%s%s\n' "$key" "$status" "$title" "$(epic_suffix "$f" "$key")" "$suffix"
+    if [ -n "$suffix" ]; then
+      suffix="$(epic_suffix "$f" "$key")$suffix$(size_suffix "$f")"
+    else
+      suffix="$(size_suffix "$f")$(epic_suffix "$f" "$key")"
+    fi
+    printf '%-12s %-13s %s%s\n' "$key" "$status" "$title" "$suffix"
   done | sort_keys
 }
 
@@ -922,6 +956,7 @@ usage() {
   tickets.sh set-epic CHILD PARENT       attach/re-parent a task to an epic
   tickets.sh epic <TICKET>               list children and done/total progress
   tickets.sh get-worktree <TICKET>       resolve the stored key using WT_ROOT
+  tickets.sh set-size <TICKET> [N]       size in positive 0.25 steps; omit to clear
 EOF
   } | sed "s/<TICKET>/${TICKET_PREFIX}-N/g"
   exit "${1:-0}"
@@ -940,6 +975,7 @@ case "$cmd" in
   new)           cmd_new "$@" ;;
   new-epic)      cmd_new_epic "$@" ;;
   set-epic)      cmd_set_epic "$@" ;;
+  set-size)      cmd_set_size "$@" ;;
   epic)          cmd_epic "$@" ;;
   mv)            cmd_mv "$@" ;;
   close)         cmd_close "$@" ;;

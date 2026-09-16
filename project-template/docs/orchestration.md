@@ -5,6 +5,9 @@ How the main thread (the orchestrator) runs work and spawns workers. Constitutio
 
 ## 1. The main thread is an orchestrator (O1)
 
+Size every ticket at G0 using `docs/slice-sizing.md`; `docs/context-ledger.md` records the
+measured context deltas so the estimate gets calibrated.
+
 **Why:** the conversation is the *volatile* medium — it gets summarized (lossy) and suffers
 lost-in-the-middle as it grows. Anything that must survive belongs in a file, not in chat.
 
@@ -345,6 +348,8 @@ decision, remove it from the rules here (H2) rather than adding to it.
 ---
 
 Change-log:
+- ported from a mature downstream project (2026-09-17): §1 gains the **G0 sizing** pointer
+  (`docs/slice-sizing.md`, `docs/context-ledger.md`); §5.6 gains **minor-clean before G4**.
 - ported from a mature downstream project (2026-09-17): §7 **the G1 brief** — G1 is
   presented as a ≤60-column plain-text flow chart in chat with decisions marked at the step
   they occur; the spec stays machine-facing; the S5 auditor cross-checks brief ↔ spec.

@@ -1,5 +1,6 @@
 """Real worktree/board CLI effects in disposable repositories with local bare origins."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -24,13 +25,16 @@ class WorktreeRepo:
         self.bin = root / "bin"
         self.bin.mkdir()
         date = self.bin / "date"
-        date.write_text('#!/bin/bash\n[[ "$*" == +%F ]] || exit 99\necho "$TEST_DATE"\n')
+        date.write_text(
+            '#!/bin/bash\ncase "$1" in\n+%F) echo "$TEST_DATE" ;;\n'
+            "+%s) /bin/date +%s ;;\n*) exit 99 ;;\nesac\n"
+        )
         date.chmod(0o755)
         self.env = {
             **{
                 k: v
                 for k, v in os.environ.items()
-                if not k.startswith(("GIT_", "TICKETS_"))
+                if not k.startswith(("GIT_", "TICKETS_", "CONTEXT_LEDGER_", "CLAUDE_CONTROL_"))
                 and k not in {"WT_ROOT", "MAIN_BRANCH", "NO_COLOR", "COLUMNS"}
             },
             "PATH": f"{self.bin}:/usr/bin:/bin",
@@ -40,6 +44,11 @@ class WorktreeRepo:
             "WT_ROOT": str(self.wt_root),
             "MAIN_BRANCH": "main",
             "TICKET_PREFIX": "SAMPLE",
+            "CLAUDE_CONTROL_EVENTS_DIR": str(root / "events"),
+            "CONTEXT_LEDGER_STATE_DIR": str(self.root / ".git/context-ledger"),
+            "CONTEXT_LEDGER_FILE": str(self.root / "docs/context-ledger.md"),
+            "CONTEXT_LEDGER_WINDOW": "1000000",
+            "CONTEXT_LEDGER_DISPATCH_TOOLS": "Agent mcp__codex__codex",
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_TERMINAL_PROMPT": "0",
@@ -53,7 +62,7 @@ class WorktreeRepo:
         self.git("init", "-q", "--bare", "-b", "main", str(self.origin))
         scripts = self.root / "scripts"
         scripts.mkdir()
-        for name in ("worktree.sh", "tickets.sh"):
+        for name in ("worktree.sh", "tickets.sh", "context-ledger.sh"):
             shutil.copy(SCRIPTS / name, scripts / name)
         (self.root / "notes.txt").write_text("original\n")
         # Seed valid tickets explicitly; worktree.sh new's best-effort seed may fail.
@@ -109,11 +118,13 @@ class WorktreeRepo:
         return (
             self.remote(),
             self.git("rev-parse", "HEAD"),
-            self.git("status", "--porcelain"),
+            self.git("status", "--porcelain", "--", ".", ":!docs/context-ledger.md"),
             {
                 str(p.relative_to(self.root)): p.read_bytes()
                 for p in self.root.rglob("*")
-                if p.is_file() and ".git" not in p.relative_to(self.root).parts
+                if p.is_file()
+                and ".git" not in p.relative_to(self.root).parts
+                and p.relative_to(self.root).as_posix() != "docs/context-ledger.md"
             },
         )
 
@@ -354,7 +365,11 @@ def test_existing_new_list_rm_behavior(repo: WorktreeRepo) -> None:
     before = repo.snapshot()
     assert str(repo.wt) in repo.worktree("list").stdout
     assert repo.snapshot() == before
+    state = repo.root / ".git/context-ledger" / f"{TICKET}.json"
+    assert state.exists()
     repo.worktree("rm", TICKET)
+    assert not state.exists()
+    assert f"| {TICKET} |" in (repo.root / "docs/context-ledger.md").read_text()
     assert not repo.wt.exists()
     assert TICKET not in repo.git("branch", "--format=%(refname:short)").splitlines()
     assert repo.snapshot() == before
@@ -443,3 +458,129 @@ def test_ac10_land_flushes_blocked_by_without_closing(repo: WorktreeRepo) -> Non
     repo.assert_board_commit(feature, {f"tickets/{TICKET}.md"})
     assert repo.git("show", f"main:tickets/{TICKET}.md", cwd=repo.origin) == expected.strip()
     assert shared.read_text() == expected
+
+
+def test_new_rm_ledger_hooks(repo: WorktreeRepo) -> None:
+    """AC16/26 E2E: hooks measure actual fixture deltas and calibrate the row."""
+    from test_context_ledger import LedgerSession, assistant
+
+    session = LedgerSession(repo.root.parent, repo=repo)
+    repo.env = session.env
+    session.append(assistant(100000, "start"))
+    repo.tickets("set-size", TICKET, "0.5")
+    result = session.command(["bash", str(repo.root / "scripts/worktree.sh"), "new", TICKET])
+    assert result.stdout == f"{repo.wt}\n"
+    assert f"ledger start {TICKET} usage=100000 predicted=0.5\n" in result.stderr
+    saved = json.loads(session.marker().read_text())
+    assert saved["usage"] == 100000 and saved["predicted"] == "0.5"
+    session.append(assistant(160000, "next", "Agent"), assistant(400000, "end"))
+    golden = Path(__file__).parent / "fixtures/context_ledger/real-scrubbed.jsonl"
+    session.append(json.loads(golden.read_text().splitlines()[-1]))
+    session.command(["bash", str(repo.root / "scripts/worktree.sh"), "rm", TICKET])
+    assert not repo.wt.exists() and not session.marker().exists()
+    assert session.row()[2:9] == ["0.5", "0.50", "1.00", "0", "2", "1", "1000000"]
+    assert session.run("calibrate").stdout == "factor=1.00 (n=1)\n"
+
+
+@pytest.mark.parametrize("mode", ["absent", "failure", "unmeasured"])
+def test_ledger_failure_never_breaks_new_rm(repo: WorktreeRepo, mode: str) -> None:
+    """AC16: byte-identical old effects, even when the optional ledger cannot measure."""
+    script = repo.root / "scripts/context-ledger.sh"
+    if mode == "absent":
+        script.unlink()
+    else:
+        script.write_text(
+            "#!/bin/sh\n" + ("exit 1\n" if mode == "failure" else "echo 'unmeasured: fixture'\n")
+        )
+    # Commit only fixture setup so a linked worktree remains removable without --force.
+    repo.git("add", "scripts/context-ledger.sh")
+    repo.git("commit", "-qm", "fixture ledger mode")
+    before = (repo.root / "tickets" / f"{TICKET}.md").read_bytes()
+    result = repo.worktree("new", TICKET)
+    assert result.stdout == f"{repo.wt}\n"
+    if mode == "unmeasured":
+        assert "unmeasured: fixture\n" in result.stderr
+    expected = before.replace(b"status: todo", b"status: in-progress").replace(
+        b"worktree:", f"worktree: {TICKET}".encode()
+    )
+    assert (repo.root / "tickets" / f"{TICKET}.md").read_bytes() == expected
+    snapshot = repo.snapshot()
+    removed = repo.worktree("rm", TICKET)
+    if mode == "unmeasured":
+        assert "unmeasured: fixture\n" in removed.stderr
+        assert "unmeasured: fixture" not in removed.stdout
+    assert repo.snapshot() == snapshot
+    assert not repo.wt.exists()
+    assert not (repo.root / ".git/context-ledger").exists()
+    assert not (repo.root / "docs/context-ledger.md").exists()
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_land_flushes_ledger_with_board(repo: WorktreeRepo, staged: bool) -> None:
+    """AC17: both already-staged and unstaged ledger paths share the board commit."""
+    feature = repo.feature()
+    ledger = repo.root / "docs/context-ledger.md"
+    ledger.parent.mkdir()
+    ledger.write_text("fixture ledger\n")
+    if staged:
+        repo.git("add", "docs/context-ledger.md")
+    repo.worktree("land", TICKET, cwd=repo.wt)
+    repo.assert_board_commit(feature, {f"tickets/{TICKET}.md", "docs/context-ledger.md"})
+    assert repo.git("show", "main:docs/context-ledger.md", cwd=repo.origin) == "fixture ledger"
+
+
+def test_land_ledger_only(repo: WorktreeRepo) -> None:
+    repo.worktree("new", TICKET)
+    feature = repo.remote()
+    repo.git("restore", "tickets/")
+    ledger = repo.root / "docs/context-ledger.md"
+    ledger.parent.mkdir()
+    ledger.write_text("ledger only\n")
+    repo.worktree("land", TICKET, cwd=repo.wt)
+    repo.assert_board_commit(feature, {"docs/context-ledger.md"})
+    assert repo.git("show", "main:docs/context-ledger.md", cwd=repo.origin) == "ledger only"
+
+
+def test_land_without_ledger_unchanged(repo: WorktreeRepo) -> None:
+    feature = repo.feature()
+    assert not (repo.root / "docs/context-ledger.md").exists()
+    repo.worktree("land", TICKET, cwd=repo.wt)
+    repo.assert_board_commit(feature, {f"tickets/{TICKET}.md"})
+
+
+def test_ledger_default_paths_resolve_main_from_linked_checkout(repo: WorktreeRepo) -> None:
+    """AC14/D8: a linked invocation writes only the disposable primary ledger/state."""
+    from test_context_ledger import LedgerSession, assistant
+
+    session = LedgerSession(repo.root.parent, repo=repo)
+    repo.env = session.env
+    session.append(assistant(100000, "a"))
+    repo.worktree("new", TICKET)
+    session.env.pop("CONTEXT_LEDGER_STATE_DIR")
+    session.env.pop("CONTEXT_LEDGER_FILE")
+    repo.tickets("set-size", TICKET, "0.5")
+    session.command(
+        [
+            "bash",
+            "-c",
+            'cd "$1"; bash scripts/context-ledger.sh start "$2"',
+            "fixture",
+            str(repo.wt),
+            TICKET,
+        ]
+    )
+    assert json.loads((session.state / f"{TICKET}.json").read_text())["predicted"] == "0.5"
+    session.append(assistant(400000, "b"))
+    session.command(
+        [
+            "bash",
+            "-c",
+            'cd "$1"; bash scripts/context-ledger.sh record "$2"',
+            "fixture",
+            str(repo.wt),
+            TICKET,
+        ]
+    )
+    assert "| 0.5 | 0.50 | 1.00 |" in session.ledger.read_text()
+    assert not (repo.wt / "docs/context-ledger.md").exists()
+    assert not (session.state / f"{TICKET}.json").exists()

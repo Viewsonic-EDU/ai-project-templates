@@ -24,7 +24,8 @@
   closed without `--force`; `TICKET_PREFIX` sets the key prefix).
 - **Every code-touching task runs in its own git worktree**: `scripts/worktree.sh new
   <TICKET>-xx` (marks an EXISTING board ticket in-progress — open it first with
-  `scripts/tickets.sh new`); build and test inside it so
+  `scripts/tickets.sh new`; `new`/`rm` also start/record the context ledger, G0); build and
+  test inside it so
   the main checkout stays clean. At close, `scripts/worktree.sh land <TICKET>-xx` carries the
   feature branch AND the board to `<MAIN_BRANCH>` in one ref update.
 - **Close ritual, in order:** build green → hand-back convergence (T8) → machine review loop
@@ -48,7 +49,8 @@
   chart in chat, decisions marked at the step they occur (`docs/orchestration.md` §7); the
   human's `①… ②…` reply is the approval.
 - **S4.** A too-big feature is SPLIT, not built in one pass: propose an epic + vertical
-  slices (spine first); the human confirms the split as part of G1.
+  slices (spine first); the human confirms the split as part of G1; sizing and G0 follow
+  `docs/slice-sizing.md`.
 - **S5.** **The scope walk runs at the FRONT and locks the AC once.** Before G1, a
   CROSS-FAMILY pass (auditor ≠ the spec author's family) re-walks the source of truth against
   what the draft accounts for — using an objective, enumerable denominator, not a vibes-walk
@@ -184,6 +186,7 @@ device, a simulator, an exclusive test runner) — or delete this section. -->
 
 | Gate | When | The human decides |
 |------|------|-------------------|
+| **G0** | before `worktree.sh new` | same session vs push & fresh session, from `size:` + `context-ledger.sh now` (`docs/slice-sizing.md`) |
 | **G1** | before any code | spec approval: AC scope, architecture, the slice split (S1–S4) |
 | **G2** | mid-implementation | space-time / scope tradeoffs that surface (S3) |
 | **G3** | during the review loop | escalated findings needing a decision (T5) |
