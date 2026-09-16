@@ -1,0 +1,8 @@
+# per-machine, not synced
+config.local.sh
+sync.log
+.bootstrap-sync.out
+.sync.lock.d/
+
+# noise
+.DS_Store

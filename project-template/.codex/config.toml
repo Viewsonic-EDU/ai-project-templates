@@ -1,0 +1,4 @@
+# Project-level Codex config. Add MCP servers the Codex lane needs, e.g.:
+#
+# [mcp_servers.figma]
+# url = "https://mcp.figma.com/mcp"
