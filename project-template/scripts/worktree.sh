@@ -6,7 +6,12 @@ set -euo pipefail
 MAIN_BRANCH="${MAIN_BRANCH:-main}"   # BOOTSTRAP: set your default branch
 TICKET_PREFIX="${TICKET_PREFIX:-TICKET}"   # BOOTSTRAP: your ticket-key prefix (e.g. AB, PROJ)
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-WT_ROOT="${WT_ROOT:-$(dirname "$REPO_ROOT")/$(basename "$REPO_ROOT")-worktrees}"
+# Worktrees live beside the PRIMARY checkout, even when invoked from a linked worktree.
+GIT_COMMON="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
+MAIN_ROOT="$(dirname "$GIT_COMMON")"
+WT_ROOT="${WT_ROOT:-$(dirname "$MAIN_ROOT")/$(basename "$MAIN_ROOT")-worktrees}"
+[[ "$WT_ROOT" = /* ]] || WT_ROOT="$MAIN_ROOT/$WT_ROOT"
+export WT_ROOT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TICKETS_SH="$SCRIPT_DIR/tickets.sh"
 
@@ -22,7 +27,7 @@ case "$cmd" in
     if [ -x "$TICKETS_SH" ]; then
       if "$TICKETS_SH" show "$ticket" >/dev/null 2>&1; then
         "$TICKETS_SH" mv "$ticket" in-progress >/dev/null
-        "$TICKETS_SH" set-worktree "$ticket" "$WT_ROOT/$ticket" >/dev/null
+        "$TICKETS_SH" set-worktree "$ticket" "$ticket" >/dev/null   # portable key; path derives from WT_ROOT
         echo "ticket $ticket -> in-progress" >&2
       else
         echo "note: no board ticket $ticket yet — create it with: scripts/tickets.sh new $ticket \"<title>\"" >&2

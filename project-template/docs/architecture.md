@@ -26,6 +26,20 @@ writer of Y", …). A worker that must break one STOPS and escalates (D1).
 ---
 
 Change-log:
+- ported from a mature downstream project (2026-09-17): **ticket dependencies + minor-clean
+  before G4.** `scripts/tickets.sh` gains `block`/`unblock`/`ready`, a close gate (a ticket
+  with unresolved blockers needs `close --force`), exhaustive cycle checks, fail-closed
+  malformed `blocked_by:` handling and width-safe board/watch/list markers; ticket files carry
+  `blocked_by: []`. Also adopted the portable worktree key (`set-worktree` stores the key,
+  `get-worktree` derives the path from `WT_ROOT`, defaulting beside the PRIMARY checkout even
+  from a linked worktree) — the template had skipped it. `worktree.sh` resolves `WT_ROOT` the
+  same way; it still refuses to auto-create a board ticket (title required, T2). Help output
+  prints the configured `TICKET_PREFIX`. CLAUDE.md T5 + `docs/orchestration.md` §5.6: a
+  review stop that still carries MINOR findings gets ONE Codex fix round + T8 rerun, no
+  re-review, before G4. Tests: `tests/test_tickets.py` (77 cases, real CLI in disposable git
+  repos, PTY frames) and `tests/test_worktree.py` (24 cases, local bare origins) shipped with
+  the neutral prefix `SAMPLE`; the one downstream test that replayed that project's real
+  board files was dropped. Suites green here (308 + 26 + width regression).
 - ported from a mature downstream project (2026-09-17): `docs/orchestration.md` §7 "The G1
   brief" — G1 is a plain-text flow chart in chat, decisions marked at their step; the spec
   stays machine-facing; the S5 auditor cross-checks brief ↔ spec. Docs-only; CLAUDE.md S3

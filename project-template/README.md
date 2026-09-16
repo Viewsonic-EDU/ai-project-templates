@@ -78,6 +78,9 @@ docs/decision-log.md         dated human decisions (G1–G3 outcomes)
 scripts/worktree.sh          one worktree per ticket (new / land / rm / list)
 scripts/tickets.sh           git-backed ticket board (tickets/*.md, shared across worktrees)
 scripts/codex-dispatch-template.md   the dispatch prompt contract
+tests/test_tickets.py, tests/test_worktree.py, tests/tickets_width_test.*
+                             the scripts' own regression suites (pytest / standalone);
+                             keep them green when editing scripts/ (T3)
 .claude/rules/               path-scoped auto-loading detail rules (see its README)
 .claude/settings.json        pre-commit housekeeping reminder hook
 .codex/config.toml           project-level Codex config (MCP servers etc.)

@@ -6,8 +6,6 @@
 # status change made from any worktree lands on one board. Per-ticket files keep
 # parallel edits conflict-free (different ticket = different file).
 #
-# <TICKET> below is a key like PROJ-12 (prefix set by $TICKET_PREFIX, see below).
-#
 # Usage:
 #   tickets.sh                             live TUI on a terminal; static board in pipes
 #   tickets.sh watch                       live read-only board (TICKETS_INTERVAL=2)
@@ -15,14 +13,15 @@
 #   tickets.sh list [status]               one line per ticket, optionally filtered
 #   tickets.sh show <TICKET>               print one ticket file
 #   tickets.sh new <TICKET> "title"        create a ticket (status=todo; title required)
-#   tickets.sh mv <TICKET> <status>        set status (todo|in-progress|done)
-#   tickets.sh close <TICKET>              shorthand for: mv <TICKET> done
-#   tickets.sh set-worktree <TICKET> PATH  record the worktree path (used by worktree.sh)
+#   tickets.sh mv <TICKET> <status> [--force]  set status; force overrides blockers on done
+#   tickets.sh close <TICKET> [--force]    shorthand for: mv <TICKET> done [--force]
+#   tickets.sh set-worktree <TICKET> [KEY|PATH]  store a portable key; omit to clear
+#   tickets.sh block <TICKET> B1 [B2…]     add ticket dependencies
+#   tickets.sh unblock <TICKET> B1 [B2…]   remove ticket dependencies
+#   tickets.sh ready                       todo tasks partitioned by dependency readiness
 set -euo pipefail
 shopt -s nullglob
 
-# BOOTSTRAP: your ticket-key prefix (e.g. AB, PROJ). Keys are then <PREFIX>-N / <PREFIX>-Nx.
-TICKET_PREFIX="${TICKET_PREFIX:-TICKET}"
 STATUSES="wishlist todo in-progress done"
 TODAY="$(date +%F)"
 
@@ -31,6 +30,12 @@ GIT_COMMON="$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && 
   || { echo "tickets.sh: not inside a git repository" >&2; exit 1; }
 MAIN_ROOT="$(dirname "$GIT_COMMON")"
 TICKETS_DIR="$MAIN_ROOT/tickets"
+WT_ROOT="${WT_ROOT:-$(dirname "$MAIN_ROOT")/$(basename "$MAIN_ROOT")-worktrees}"
+[[ "$WT_ROOT" = /* ]] || WT_ROOT="$MAIN_ROOT/$WT_ROOT"
+
+# BOOTSTRAP: your ticket-key prefix (e.g. AB, PROJ). Keys are then <PREFIX>-N / <PREFIX>-Nx.
+# The usage text above writes them as <TICKET>; help prints the configured prefix.
+TICKET_PREFIX="${TICKET_PREFIX:-TICKET}"
 
 # --- helpers -----------------------------------------------------------------------
 die() { echo "tickets.sh: $*" >&2; exit 1; }
@@ -83,6 +88,7 @@ upsert_field() { # file name value
           break
         fi
       fi
+      if [ "$n" -eq 1 ] && [ "$name" = blocked_by ] && [ "$found" -eq 1 ] && [[ "$line" == blocked_by:* ]]; then continue; fi
       if [ "$n" -eq 1 ] && [ "$found" -eq 0 ] && [[ "$line" == "$name:"* ]]; then
         printf '%s: %s\n' "$name" "$val"
         found=1
@@ -92,6 +98,152 @@ upsert_field() { # file name value
     done
   } < "$f" > "$tmp"
   mv "$tmp" "$f"
+}
+
+# Parse all-or-nothing: no output until every entry validates. Missing is empty,
+# but an explicitly empty value is malformed. Whole-key sets preserve first order.
+blockers() { # file; 0 = valid, 2 = malformed
+  local raw inner entry seen=" " result=
+  raw=$(field "$1" blocked_by)
+  if [ -z "$raw" ]; then
+    if awk '/^---[ \t]*$/ { n++; next } n==1 && /^blocked_by:/ { found=1 }
+      END { exit !found }' "$1"; then return 2; fi
+    return 0
+  fi
+  [[ "$raw" == \[*\] ]] || return 2
+  inner=${raw#\[}; inner=${inner%\]}
+  inner=${inner#"${inner%%[![:space:]]*}"}; inner=${inner%"${inner##*[![:space:]]}"}
+  [ -n "$inner" ] || return 0
+  while :; do
+    entry=${inner%%,*}
+    entry=${entry#"${entry%%[![:space:]]*}"}; entry=${entry%"${entry##*[![:space:]]}"}
+    valid_key "$entry" || return 2
+    case "$seen" in
+      *" $entry "*) ;;
+      *) seen+="$entry "; result+="$entry"$'\n' ;;
+    esac
+    [[ "$inner" == *,* ]] || break
+    inner=${inner#*,}
+  done
+  printf '%s' "$result"
+}
+
+write_blockers() { # file [keys...]
+  local f=$1 value= sep= key; shift
+  for key in "$@"; do value+="$sep$key"; sep=", "; done
+  upsert_field "$f" blocked_by "[$value]"
+  upsert_field "$f" updated "$TODAY"
+}
+
+unresolved_blockers() { # key -> blocker<TAB>reason; malformed is fail-closed
+  local key=$1 parsed blocker f status
+  if ! parsed=$(blockers "$(file_for "$key")"); then
+    echo "tickets.sh: warn: $key has malformed blocked_by" >&2
+    printf '\tmalformed\n'
+    return 0
+  fi
+  [ -n "$parsed" ] || return 0
+  while IFS= read -r blocker; do
+    f=$(file_for "$blocker")
+    if [ ! -f "$f" ]; then
+      echo "tickets.sh: warn: $key has missing blocker $blocker" >&2
+      printf '%s\tmissing\n' "$blocker"
+    else
+      status=$(field "$f" status); status=${status:-unknown}
+      [ "$status" = done ] || printf '%s\t%s\n' "$blocker" "$status"
+    fi
+  done <<< "$parsed"
+}
+
+blocker_description() { # unresolved records, names or reasons
+  local record key reason sep=
+  [ -n "$1" ] || return 0
+  while IFS= read -r record; do
+    key=${record%%$'\t'*}; reason=${record#*$'\t'}
+    if [ "$reason" = malformed ]; then
+      if [ "$2" = reasons ]; then printf '%s(malformed blocked_by)' "$sep"
+      else printf '%smalformed' "$sep"
+      fi
+    elif [ "$2" = reasons ]; then printf '%s%s (%s)' "$sep" "$key" "$reason"
+    else printf '%s%s' "$sep" "$key"
+    fi
+    sep=", "
+  done <<< "$1"
+}
+
+# Iterative depth-first traversal avoids both recursion and arbitrary depth limits.
+# Valid keys contain no whitespace; a plain-string visited set terminates old cycles.
+reaches() { # target from; 0 = no reach, 1 = reach, 3 = malformed graph
+  local target=$1 pending=$2 visited=" " node parsed blocker
+  while [ -n "$pending" ]; do
+    node=${pending%% *}
+    if [[ "$pending" == *" "* ]]; then pending=${pending#* }; else pending=; fi
+    [ "$node" != "$target" ] || return 1
+    case "$visited" in *" $node "*) continue ;; esac
+    visited+="$node "
+    [ -f "$(file_for "$node")" ] || continue
+    if ! parsed=$(blockers "$(file_for "$node")"); then
+      echo "tickets.sh: warn: $node has malformed blocked_by" >&2
+      return 3
+    fi
+    [ -n "$parsed" ] || continue
+    while IFS= read -r blocker; do pending="$blocker${pending:+ $pending}"; done <<< "$parsed"
+  done
+  return 0
+}
+
+cmd_dependencies() { # command key blockers...
+  local command=$1 key=${2:-} f parsed blocker original=" " requested=" " check
+  local -a result=()
+  shift
+  [ "$#" -ge 2 ] || die "usage: tickets.sh $command ${TICKET_PREFIX}-N B1 [B2…]"
+  require_ticket "$key"
+  if [ "$command" = block ] && is_epic "$key"; then die "epic cannot have blockers: $key"; fi
+  f=$(file_for "$key")
+  if ! parsed=$(blockers "$f"); then
+    echo "tickets.sh: warn: $key has malformed blocked_by" >&2
+    die "$key has malformed blocked_by; refusing $command"
+  fi
+  # Resolution supplies the same stale-edge diagnostics as the other readers.
+  unresolved_blockers "$key" > /dev/null
+  if [ -n "$parsed" ]; then
+    while IFS= read -r blocker; do original+="$blocker "; done <<< "$parsed"
+  fi
+  shift
+  for blocker in "$@"; do
+    valid_key "$blocker" || die "bad key '$blocker' (expected ${TICKET_PREFIX}-N or ${TICKET_PREFIX}-Nx)"
+    case "$requested" in *" $blocker "*) continue ;; esac
+    requested+="$blocker "
+    if [ "$command" = block ]; then
+      require_ticket "$blocker"
+      [ "$blocker" != "$key" ] || die "$key cannot block itself"
+      is_epic "$blocker" && die "epic cannot be a blocker: $blocker"
+      check=0; reaches "$key" "$blocker" || check=$?
+      case "$check" in
+        1) die "$blocker creates a dependency cycle reaching $key" ;;
+        3) die "$blocker reaches malformed blocked_by; refusing block" ;;
+      esac
+    else
+      case "$original" in *" $blocker "*) ;; *) die "$blocker is not a blocker of $key" ;; esac
+    fi
+  done
+  if [ -n "$parsed" ]; then
+    while IFS= read -r blocker; do
+      if [ "$command" = unblock ]; then
+        case "$requested" in *" $blocker "*) continue ;; esac
+      fi
+      result+=("$blocker")
+    done <<< "$parsed"
+  fi
+  if [ "$command" = block ]; then
+    for blocker in $requested; do
+      case "$original" in *" $blocker "*) ;; *) result+=("$blocker") ;; esac
+    done
+  fi
+  if [ "${#result[@]}" -gt 0 ]; then write_blockers "$f" "${result[@]}"
+  else write_blockers "$f"
+  fi
+  echo "$key blocked_by $(field "$f" blocked_by)"
 }
 
 is_epic() {
@@ -198,6 +350,7 @@ title: $title
 status: $status
 spec:
 worktree:
+blocked_by: []
 updated: $TODAY
 ---
 EOF
@@ -211,10 +364,22 @@ cmd_new() { cmd_create new "$@"; }
 cmd_new_epic() { cmd_create new-epic "$@"; }
 
 cmd_mv() {
-  local key=${1:-} status=${2:-}
+  local key=${1:-} status=${2:-} force=no unresolved description
+  [ "$#" -eq 2 ] || { [ "$#" -eq 3 ] && [ "$3" = --force ]; } \
+    || die "usage: tickets.sh mv ${TICKET_PREFIX}-N <status> [--force]"
+  [[ "$key" != --* && "$status" != --* ]] || die "usage: tickets.sh mv ${TICKET_PREFIX}-N <status> [--force]"
+  if [ "$#" -eq 3 ]; then force=yes; fi
   require_ticket "$key"
   valid_status "$status" || die "bad status '$status' (one of: $STATUSES)"
   is_epic "$key" && die "epic status is derived from its children; move/close the children of $key instead"
+  if [ "$status" = done ]; then
+    unresolved=$(unresolved_blockers "$key")
+    if [ -n "$unresolved" ]; then
+      description=$(blocker_description "$unresolved" reasons)
+      [ "$force" = yes ] || die "$key has unresolved blocker(s): $description"
+      echo "tickets.sh: warn: $key closed over unresolved blocker(s): $description" >&2
+    fi
+  fi
   set_field "$(file_for "$key")" status "$status"
   set_field "$(file_for "$key")" updated "$TODAY"
   echo "$key -> $status"
@@ -222,7 +387,12 @@ cmd_mv() {
   if [ -n "$parent" ]; then recompute_epic "$parent"; fi
 }
 
-cmd_close() { cmd_mv "${1:-}" done; }
+cmd_close() {
+  [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --force ]; } \
+    || die "usage: tickets.sh close ${TICKET_PREFIX}-N [--force]"
+  local key=$1; shift
+  cmd_mv "$key" done "$@"
+}
 
 cmd_set_epic() {
   local key=${1:-} parent=${2:-} f old_parent
@@ -255,8 +425,23 @@ cmd_epic() {
 cmd_set_worktree() {
   local key=${1:-} path=${2:-}
   require_ticket "$key"
+  if [ -n "$path" ]; then
+    # Accept the conventional absolute path for existing callers, but never persist it.
+    [ "$path" = "$key" ] || [ "$path" = "$WT_ROOT/$key" ] \
+      || die "worktree must be $key or WT_ROOT/$key (set WT_ROOT for a custom location)"
+    path=$key
+  fi
   set_field "$(file_for "$key")" worktree "$path"
   set_field "$(file_for "$key")" updated "$TODAY"
+}
+
+cmd_get_worktree() {
+  local key=${1:-} stored
+  require_ticket "$key"
+  stored="$(field "$(file_for "$key")" worktree)"
+  [ -n "$stored" ] || return 0
+  [ "$stored" = "$key" ] || die "worktree field is not a portable key: $key"
+  printf '%s/%s\n' "$WT_ROOT" "$key"
 }
 
 cmd_show() {
@@ -378,24 +563,26 @@ detect_colors() { # Assigns caller-scoped C_* variables via Bash dynamic scope.
   fi
 }
 
-board_cell() { # text style child; pad/truncate BEFORE adding any ANSI.
-  local padded
-  padded=$(cell "$1" "$W")
+board_cell() { # text style child blocked; compose visible prefixes BEFORE sizing.
+  local text=$1 padded prefix=
+  if [ "$3" = yes ]; then text="↳ $text"; fi
+  if [ "$4" = yes ]; then prefix="! "; fi
+  padded=$(cell "$prefix$text" "$W")
   if [ "$3" = yes ]; then
-    padded="${C_DIM}↳ ${C_RST}${2}${padded#↳ }"
+    padded="${prefix}${C_DIM}↳ ${C_RST}${2}${padded#"${prefix}↳ "}"
   fi
   printf '%s%s%s' "$2" "$padded" "$C_RST"
 }
 
 board_row() { # file; updates the caller's line and per-column group_epic in order.
-  local f=$1 key status title kind parent style= child=no
+  local f=$1 key status title kind parent style= child=no blocked=no unresolved
   key=$(field "$f" key); status=$(field "$f" status); title=$(field "$f" title)
   kind=$(field "$f" type); parent=$(field "$f" epic)
   line="$key  $title$(epic_suffix "$f" "$key")"
   if [ "$kind" = epic ]; then
     group_epic=$key
   elif [ -n "$parent" ] && [ "$parent" = "$group_epic" ]; then
-    child=yes; line="↳ $line"
+    child=yes
   else
     group_epic=
   fi
@@ -404,20 +591,49 @@ board_row() { # file; updates the caller's line and per-column group_epic in ord
     wishlist|done) style=$C_DONE ;;
   esac
   if [ "$kind" = epic ]; then style+=$C_EPIC; fi
-  line=$(board_cell "$line" "$style" "$child")
+  if [ "$status" != done ]; then
+    unresolved=$(unresolved_blockers "$key")
+    if [ -n "$unresolved" ]; then blocked=yes; fi
+  fi
+  line=$(board_cell "$line" "$style" "$child" "$blocked")
 }
 
 cmd_list() {
   local want=${1:-}
   [ -z "$want" ] || valid_status "$want" || die "bad status '$want' (one of: $STATUSES)"
-  local f key status title
+  local f key status title unresolved suffix
   for f in "$TICKETS_DIR"/*.md; do
     [ -e "$f" ] || continue
     key="$(field "$f" key)"; status="$(field "$f" status)"; title="$(field "$f" title)"
     [ -z "$want" ] || [ "$status" = "$want" ] || continue
+    suffix=
+    if [ "$status" != done ]; then
+      unresolved=$(unresolved_blockers "$key")
+      if [ -n "$unresolved" ]; then suffix=" [blocked: $(blocker_description "$unresolved" names)]"; fi
+    fi
     key_order "$key"
-    printf '%-12s %-13s %s%s\n' "$key" "$status" "$title" "$(epic_suffix "$f" "$key")"
+    printf '%-12s %-13s %s%s%s\n' "$key" "$status" "$title" "$(epic_suffix "$f" "$key")" "$suffix"
   done | sort_keys
+}
+
+cmd_ready() {
+  local f key title unresolved ready= blocked= nr=0 nb=0
+  for f in "$TICKETS_DIR"/*.md; do
+    [ "$(field "$f" status)" = todo ] && [ "$(field "$f" type)" != epic ] || continue
+    key=$(field "$f" key); title=$(field "$f" title)
+    unresolved=$(unresolved_blockers "$key")
+    if [ -n "$unresolved" ]; then
+      nb=$((nb + 1))
+      blocked+="$(key_order "$key")$key  $title  ← waiting on $(blocker_description "$unresolved" reasons)"$'\n'
+    else
+      nr=$((nr + 1))
+      ready+="$(key_order "$key")$(printf '%-12s %-13s %s' "$key" todo "$title")"$'\n'
+    fi
+  done
+  printf 'READY (%s)\n' "$nr"
+  if [ -n "$ready" ]; then printf '%s' "$ready" | sort_keys; fi
+  printf 'BLOCKED (%s)\n' "$nb"
+  if [ -n "$blocked" ]; then printf '%s' "$blocked" | sort_keys; fi
 }
 
 cmd_board() {
@@ -473,7 +689,7 @@ cmd_board() {
       done_+=("$line"); shown=$((shown + 1))
     done <<< "$prefix"
     if [ "$shown" -lt "$n3" ]; then
-      done_+=("$(board_cell "… +$((n3 - shown)) more (--all)" "$C_DIM" no)")
+      done_+=("$(board_cell "… +$((n3 - shown)) more (--all)" "$C_DIM" no no)")
     fi
   fi
   local max=$n0 height=${#done_[@]} i gutter underline
@@ -481,9 +697,9 @@ cmd_board() {
   [ "$n2" -le "$max" ] || max=$n2; [ "$height" -le "$max" ] || max=$height
   gutter="${C_DIM} │ ${C_RST}"
   underline=$(printf '%*s' "$W" ''); underline=${underline// /-}
-  printf '%s%s%s%s%s%s%s\n' "$(board_cell "WISHLIST ($n0)" "$C_HDR" no)" "$gutter" \
-    "$(board_cell "TODO ($n1)" "$C_HDR" no)" "$gutter" \
-    "$(board_cell "IN-PROGRESS ($n2)" "$C_HDR" no)" "$gutter" "$(board_cell "DONE ($n3)" "$C_HDR" no)"
+  printf '%s%s%s%s%s%s%s\n' "$(board_cell "WISHLIST ($n0)" "$C_HDR" no no)" "$gutter" \
+    "$(board_cell "TODO ($n1)" "$C_HDR" no no)" "$gutter" \
+    "$(board_cell "IN-PROGRESS ($n2)" "$C_HDR" no no)" "$gutter" "$(board_cell "DONE ($n3)" "$C_HDR" no no)"
   printf '%s%s%s%s%s%s%s\n' "$underline" "$gutter" "$underline" "$gutter" "$underline" "$gutter" "$underline"
   local blank; blank=$(cell '' "$W")
   for ((i=0; i<max; i++)); do
@@ -572,7 +788,7 @@ EOF
         in-progress) line="IN-PROGRESS ($count)" ;;
         done) line="DONE ($count)" ;;
       esac
-      WATCH_LINES+=("$(board_cell "$line" "$C_HDR" no)"); WATCH_ROW_KEYS+=("")
+      WATCH_LINES+=("$(board_cell "$line" "$C_HDR" no no)"); WATCH_ROW_KEYS+=("")
       if [ "$count" -eq 0 ]; then continue; fi
       for f in "${files[@]}"; do
         if [ "$group" = done ] && [ "$done_limit" -gt 0 ] && [ "$shown" -ge "$done_limit" ]; then
@@ -585,7 +801,7 @@ EOF
         shown=$((shown + 1))
       done
       if [ "$shown" -lt "$count" ]; then
-        WATCH_LINES+=("$(board_cell "… +$((count - shown)) more" "$C_DIM" no)")
+        WATCH_LINES+=("$(board_cell "… +$((count - shown)) more" "$C_DIM" no no)")
         WATCH_ROW_KEYS+=("")
       fi
     done
@@ -699,13 +915,15 @@ EOF
 }
 
 usage() {
-  sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'
-  cat <<'EOF'
+  { sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
+    cat <<'EOF'
   tickets.sh new-epic <TICKET> "title"  create an epic (status derived from children)
   tickets.sh new <TICKET> "title" --epic PARENT  create a child of an epic
   tickets.sh set-epic CHILD PARENT       attach/re-parent a task to an epic
   tickets.sh epic <TICKET>               list children and done/total progress
+  tickets.sh get-worktree <TICKET>       resolve the stored key using WT_ROOT
 EOF
+  } | sed "s/<TICKET>/${TICKET_PREFIX}-N/g"
   exit "${1:-0}"
 }
 
@@ -716,6 +934,8 @@ case "$cmd" in
   board)         cmd_board "$@" ;;
   watch)         cmd_watch "$@" ;;
   list)          cmd_list "$@" ;;
+  ready)         cmd_ready "$@" ;;
+  block|unblock) cmd_dependencies "$cmd" "$@" ;;
   show)          cmd_show "$@" ;;
   new)           cmd_new "$@" ;;
   new-epic)      cmd_new_epic "$@" ;;
@@ -724,6 +944,7 @@ case "$cmd" in
   mv)            cmd_mv "$@" ;;
   close)         cmd_close "$@" ;;
   set-worktree)  cmd_set_worktree "$@" ;;
+  get-worktree)  cmd_get_worktree "$@" ;;
   -h|--help|help) usage 0 ;;
   *) echo "tickets.sh: unknown command '$cmd'" >&2; usage 1 ;;
 esac

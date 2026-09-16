@@ -20,7 +20,8 @@
 - **Every task maps to a ticket** `<TICKET>-xx`; the key MUST appear in the branch name or
   commit message. Open the ticket before starting, at latest before committing. The board
   is `scripts/tickets.sh` (git-tracked `tickets/*.md`, shared across worktrees; `board` /
-  `watch` to view, `TICKET_PREFIX` sets the key prefix).
+  `watch` to view, `block`/`unblock`/`ready` for dependencies — a blocked ticket cannot be
+  closed without `--force`; `TICKET_PREFIX` sets the key prefix).
 - **Every code-touching task runs in its own git worktree**: `scripts/worktree.sh new
   <TICKET>-xx` (marks an EXISTING board ticket in-progress — open it first with
   `scripts/tickets.sh new`); build and test inside it so
@@ -87,7 +88,10 @@
   only diff + AC + spec; **reviewer ≠ fixer**, and the binding reviewer is the OTHER model
   family from the author (O4). Mechanical defects auto-fix + re-review; the loop **STOPS
   ONLY when the reviewer reports no MAJOR finding (blocker/major) — minor/nit never block a
-  stop**. A finding needing a human DECISION stops the loop → escalate (gate G3).
+  stop**. **A stop that still carries MINOR findings gets ONE post-review fix round (Codex) +
+  T8 rerun, NO re-review, BEFORE G4** — the human eyeballs a minor-clean artifact; nits are
+  fixed in that same round at the fixer's discretion. A finding needing a human DECISION
+  stops the loop → escalate (gate G3).
 - **T6.** **Human sign-off (G4) is the FINAL gate:** report the built artifact + a
   **look-point list** (every new/changed surface or behavior, steps to reach it, what to
   check). Push only after approval.

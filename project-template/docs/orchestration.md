@@ -240,6 +240,15 @@ entangled with live conversation state to hand off cleanly.
 - Every finding passes the anti-hallucination check: it must name files actually in the
   diff, else dismiss. **A reviewer's citation is a claim, not evidence** — "I could not find
   it" is not "it does not exist"; check the branch and the call path before acting.
+- **Minor-clean before G4.** The loop stops on "no blocker/major", but it does NOT hand the
+  human a list of known minors to eyeball around. When the stopping review still carries
+  MINOR findings: dispatch ONE fix round to the Codex thread that authored the diff (each
+  finding → fixed / skipped-with-reason, at the locked AC scope; nits included when each is
+  a few-line change), then the orchestrator reruns T8 (build + impacted suites) — **no
+  re-review**, since minors by definition change no behaviour the AC pins and the T8 rerun
+  catches a regression. Only then compose the G4 look-point list. A "minor" fix that turns
+  out to need behaviour the AC does not state is not a minor: it escalates (G3), it is not
+  fixed silently.
 
 ## 6. Worker isolation verification (O3)
 
